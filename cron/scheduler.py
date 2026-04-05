@@ -564,6 +564,24 @@ def tick(verbose: bool = True) -> int:
 
                 success, output, final_response, error = run_job(job)
 
+                # Emit OpenSpec event if this cron job carries openspec metadata
+                _os_meta = job.get("origin", {}) or {}
+                _os_project = _os_meta.get("openspec_project_code")
+                _os_change = _os_meta.get("openspec_change_id")
+                _os_agent = _os_meta.get("openspec_agent_id", f"cron-{job['id']}")
+                if _os_project:
+                    try:
+                        from tools.openspec_events import get_event_bus
+                        from tools.openspec_state import AgentEvent
+                        evt_type = "agent_completed" if success else "agent_failed"
+                        get_event_bus().emit_sync(AgentEvent.create(
+                            project_code=_os_project, change_id=_os_change or "",
+                            agent_id=_os_agent, event_type=evt_type,
+                            payload={"job_id": job["id"], "job_name": job.get("name", ""), "success": success},
+                        ))
+                    except Exception:
+                        pass
+
                 output_file = save_job_output(job["id"], output)
                 if verbose:
                     logger.info("Output saved to: %s", output_file)

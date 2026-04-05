@@ -12,7 +12,12 @@ HERMES_HOME ?= $(HOME)/.hermes
 HERMES_CONFIG := $(HERMES_HOME)/config.yaml
 HERMES_ENV := $(HERMES_HOME)/.env
 
-.PHONY: help setup npm-install bootstrap-user-config doctor run chat setup-wizard test clean
+API_SERVER_KEY ?= hermes-local-key
+WEBUI_PORT ?= 8080
+
+.PHONY: help setup npm-install bootstrap-user-config doctor run chat setup-wizard test clean \
+        gateway-setup gateway-start gateway-stop gateway-restart gateway-status gateway-install gateway-uninstall \
+        webui-install webui
 
 help:
 	@printf "\nHermes local development\n\n"
@@ -24,7 +29,18 @@ help:
 	@printf "  make chat                  Quick Hermes smoke test\n"
 	@printf "  make setup-wizard          Run Hermes interactive setup\n"
 	@printf "  make test                  Run pytest suite\n"
-	@printf "  make clean                 Remove repo-local venv\n\n"
+	@printf "  make clean                 Remove repo-local venv\n"
+	@printf "\nGateway / daemon (UI access via http://127.0.0.1:8642)\n\n"
+	@printf "  make gateway-setup         Configure gateway platforms (run once)\n"
+	@printf "  make gateway-start         Start gateway as background daemon\n"
+	@printf "  make gateway-stop          Stop background daemon\n"
+	@printf "  make gateway-restart       Restart background daemon\n"
+	@printf "  make gateway-status        Show daemon status\n"
+	@printf "  make gateway-install       Register daemon with OS service manager\n"
+	@printf "  make gateway-uninstall     Remove daemon from OS service manager\n"
+	@printf "\nWeb UI (Open WebUI at http://localhost:8080)\n\n"
+	@printf "  make webui-install         Install Open WebUI via pip\n"
+	@printf "  make webui                 Start Open WebUI (connects to gateway on port 8642)\n\n"
 
 $(VENV_BIN)/python:
 	$(UV) venv $(VENV_DIR) --python $(PYTHON_VERSION)
@@ -62,3 +78,32 @@ test: install
 
 clean:
 	rm -rf "$(VENV_DIR)"
+
+gateway-setup: install
+	$(HERMES) gateway setup
+
+gateway-start: install
+	$(HERMES) gateway start
+
+gateway-stop: install
+	$(HERMES) gateway stop
+
+gateway-restart: install
+	$(HERMES) gateway restart
+
+gateway-status: install
+	$(HERMES) gateway status
+
+gateway-install: install
+	$(HERMES) gateway install
+
+gateway-uninstall: install
+	$(HERMES) gateway uninstall
+
+webui-install:
+	VIRTUAL_ENV="$(CURDIR)/$(VENV_DIR)" $(UV) pip install open-webui
+
+webui: webui-install
+	OPENAI_API_BASE_URL=http://localhost:8642/v1 \
+	OPENAI_API_KEY=$(API_SERVER_KEY) \
+	$(VENV_BIN)/open-webui serve --port $(WEBUI_PORT)

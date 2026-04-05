@@ -1143,6 +1143,19 @@ class GatewayRunner:
         except Exception:
             pass
         
+        # Initialize OpenSpec event bus and wire it to the gateway event loop
+        try:
+            from tools.openspec_events import get_event_bus
+            _os_bus = get_event_bus()
+            _os_bus.set_loop(asyncio.get_event_loop())
+            # Register gateway hook handlers that forward agent lifecycle events
+            self.hooks.register("agent:start", lambda et, ctx: _os_bus.emit_from_hook(et, ctx))
+            self.hooks.register("agent:step", lambda et, ctx: _os_bus.emit_from_hook(et, ctx))
+            self.hooks.register("agent:end", lambda et, ctx: _os_bus.emit_from_hook(et, ctx))
+            logger.info("OpenSpec event bus initialized")
+        except Exception as _os_err:
+            logger.debug("OpenSpec event bus init failed (non-fatal): %s", _os_err)
+
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:

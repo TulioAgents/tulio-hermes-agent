@@ -91,6 +91,54 @@ CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 """
 
+OPENSPEC_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS openspec_agents (
+    agent_id        TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL,
+    project_code    TEXT NOT NULL,
+    change_id       TEXT NOT NULL,
+    role            TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'running',
+    started_at      TEXT NOT NULL,
+    ended_at        TEXT,
+    parent_agent_id TEXT,
+    summary         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS openspec_tasks (
+    task_id             TEXT PRIMARY KEY,
+    project_code        TEXT NOT NULL,
+    change_id           TEXT NOT NULL,
+    phase               TEXT NOT NULL,
+    title               TEXT NOT NULL,
+    description         TEXT,
+    assigned_role       TEXT NOT NULL,
+    assigned_agent_id   TEXT,
+    status              TEXT NOT NULL DEFAULT 'pending',
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    completed_at        TEXT
+);
+
+CREATE TABLE IF NOT EXISTS openspec_events (
+    event_id        TEXT PRIMARY KEY,
+    timestamp       TEXT NOT NULL,
+    project_code    TEXT NOT NULL,
+    change_id       TEXT NOT NULL,
+    agent_id        TEXT NOT NULL,
+    event_type      TEXT NOT NULL,
+    payload         TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_os_agents_project  ON openspec_agents(project_code, change_id);
+CREATE INDEX IF NOT EXISTS idx_os_agents_status   ON openspec_agents(status);
+CREATE INDEX IF NOT EXISTS idx_os_tasks_project   ON openspec_tasks(project_code, change_id);
+CREATE INDEX IF NOT EXISTS idx_os_tasks_status    ON openspec_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_os_events_project  ON openspec_events(project_code, change_id);
+CREATE INDEX IF NOT EXISTS idx_os_events_agent    ON openspec_events(agent_id);
+CREATE INDEX IF NOT EXISTS idx_os_events_time     ON openspec_events(timestamp DESC);
+"""
+
 FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content,
@@ -255,6 +303,12 @@ class SessionDB:
         cursor = self._conn.cursor()
 
         cursor.executescript(SCHEMA_SQL)
+
+        # OpenSpec observability tables (additive, safe to run on existing DBs)
+        try:
+            cursor.executescript(OPENSPEC_SCHEMA_SQL)
+        except Exception as _oe:
+            logger.debug("OpenSpec schema init warning: %s", _oe)
 
         # Check schema version and run migrations
         cursor.execute("SELECT version FROM schema_version LIMIT 1")
@@ -1275,3 +1329,198 @@ class SessionDB:
             return len(session_ids)
 
         return self._execute_write(_do)
+
+    # =========================================================================
+    # OpenSpec: Agent registry
+    # =========================================================================
+
+    def openspec_upsert_agent(self, agent) -> None:
+        """Insert or replace an AgentRecord."""
+        def _do(conn):
+            conn.execute(
+                """INSERT OR REPLACE INTO openspec_agents
+                   (agent_id, session_id, project_code, change_id, role,
+                    status, started_at, ended_at, parent_agent_id, summary)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    agent.agent_id, agent.session_id, agent.project_code,
+                    agent.change_id, agent.role, agent.status,
+                    agent.started_at, agent.ended_at,
+                    agent.parent_agent_id, agent.summary,
+                ),
+            )
+        self._execute_write(_do)
+
+    def openspec_update_agent_status(
+        self,
+        agent_id: str,
+        status: str,
+        ended_at: Optional[str] = None,
+        summary: Optional[str] = None,
+    ) -> None:
+        """Update status (and optionally ended_at / summary) for an agent."""
+        def _do(conn):
+            conn.execute(
+                """UPDATE openspec_agents
+                   SET status=?, ended_at=COALESCE(?,ended_at),
+                       summary=COALESCE(?,summary)
+                   WHERE agent_id=?""",
+                (status, ended_at, summary, agent_id),
+            )
+        self._execute_write(_do)
+
+    def openspec_list_agents(
+        self,
+        project_code: Optional[str] = None,
+        change_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Any]:
+        """Return AgentRecord objects matching the given filters."""
+        from tools.openspec_state import AgentRecord
+        clauses, params = [], []
+        if project_code:
+            clauses.append("project_code=?"); params.append(project_code)
+        if change_id:
+            clauses.append("change_id=?"); params.append(change_id)
+        if status:
+            clauses.append("status=?"); params.append(status)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT * FROM openspec_agents {where} ORDER BY started_at DESC LIMIT ?",
+            params + [limit],
+        ).fetchall()
+        return [AgentRecord.from_row(r) for r in rows]
+
+    # =========================================================================
+    # OpenSpec: Task registry (kanban)
+    # =========================================================================
+
+    def openspec_insert_task(self, task) -> None:
+        """Insert a new TaskRecord."""
+        def _do(conn):
+            conn.execute(
+                """INSERT OR IGNORE INTO openspec_tasks
+                   (task_id, project_code, change_id, phase, title, description,
+                    assigned_role, assigned_agent_id, status, created_at,
+                    updated_at, completed_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    task.task_id, task.project_code, task.change_id,
+                    task.phase, task.title, task.description,
+                    task.assigned_role, task.assigned_agent_id,
+                    task.status, task.created_at, task.updated_at,
+                    task.completed_at,
+                ),
+            )
+        self._execute_write(_do)
+
+    def openspec_update_task_status(
+        self,
+        task_id: str,
+        status: str,
+        agent_id: Optional[str] = None,
+        summary: Optional[str] = None,
+    ) -> None:
+        """Update task status and optionally assign agent and record summary."""
+        import datetime
+        now = datetime.datetime.utcnow().isoformat() + "Z"
+        completed_at = now if status == "completed" else None
+
+        def _do(conn):
+            conn.execute(
+                """UPDATE openspec_tasks
+                   SET status=?, updated_at=?,
+                       assigned_agent_id=COALESCE(?,assigned_agent_id),
+                       completed_at=COALESCE(?,completed_at)
+                   WHERE task_id=?""",
+                (status, now, agent_id, completed_at, task_id),
+            )
+        self._execute_write(_do)
+
+    def openspec_get_task(self, task_id: str) -> Optional[Any]:
+        """Return a single TaskRecord or None."""
+        from tools.openspec_state import TaskRecord
+        row = self._conn.execute(
+            "SELECT * FROM openspec_tasks WHERE task_id=?", (task_id,)
+        ).fetchone()
+        return TaskRecord.from_row(row) if row else None
+
+    def openspec_list_tasks(
+        self,
+        project_code: Optional[str] = None,
+        change_id: Optional[str] = None,
+        status: Optional[str] = None,
+        phase: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Any]:
+        """Return TaskRecord objects matching the given filters."""
+        from tools.openspec_state import TaskRecord
+        clauses, params = [], []
+        if project_code:
+            clauses.append("project_code=?"); params.append(project_code)
+        if change_id:
+            clauses.append("change_id=?"); params.append(change_id)
+        if status:
+            clauses.append("status=?"); params.append(status)
+        if phase:
+            clauses.append("phase=?"); params.append(phase)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT * FROM openspec_tasks {where} ORDER BY created_at ASC LIMIT ?",
+            params + [limit],
+        ).fetchall()
+        return [TaskRecord.from_row(r) for r in rows]
+
+    # =========================================================================
+    # OpenSpec: Event log
+    # =========================================================================
+
+    def openspec_add_event(self, event) -> None:
+        """Append an AgentEvent to the event log."""
+        import json as _json
+        payload_str = (
+            _json.dumps(event.payload)
+            if isinstance(event.payload, dict)
+            else str(event.payload)
+        )
+        def _do(conn):
+            conn.execute(
+                """INSERT OR IGNORE INTO openspec_events
+                   (event_id, timestamp, project_code, change_id,
+                    agent_id, event_type, payload)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (
+                    event.event_id, event.timestamp,
+                    event.project_code, event.change_id,
+                    event.agent_id, event.event_type, payload_str,
+                ),
+            )
+        self._execute_write(_do)
+
+    def openspec_list_events(
+        self,
+        project_code: Optional[str] = None,
+        change_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Any]:
+        """Return AgentEvent objects matching the given filters, newest first."""
+        from tools.openspec_state import AgentEvent
+        clauses, params = [], []
+        if project_code:
+            clauses.append("project_code=?"); params.append(project_code)
+        if change_id:
+            clauses.append("change_id=?"); params.append(change_id)
+        if agent_id:
+            clauses.append("agent_id=?"); params.append(agent_id)
+        if event_type:
+            clauses.append("event_type=?"); params.append(event_type)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT * FROM openspec_events {where} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        ).fetchall()
+        return [AgentEvent.from_row(r) for r in rows]

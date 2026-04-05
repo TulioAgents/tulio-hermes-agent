@@ -1,0 +1,9 @@
+change_id: ""
+type: feature          # feature | hotfix | spike | chore
+phase: idea            # idea | proposal | plan | design | implementation | verification | release | done | blocked
+owner: ""              # current role responsible
+branch: ""             # git branch for this change
+worktree: ""           # worktree path or empty for main
+blockers: []           # list of blocker descriptions
+created_at: ""         # ISO timestamp
+updated_at: ""         # ISO timestamp

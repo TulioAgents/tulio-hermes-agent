@@ -270,6 +270,22 @@ def _run_single_child(
     _saved_tool_names = getattr(child, "_delegate_saved_tool_names",
                                 list(model_tools._last_resolved_tool_names))
 
+    # Emit OpenSpec agent lifecycle events if the child has openspec context
+    _os_project = getattr(child, '_openspec_project_code', None)
+    _os_change = getattr(child, '_openspec_change_id', None)
+    _os_agent_id = getattr(child, '_openspec_agent_id', None)
+    if _os_project and _os_agent_id:
+        try:
+            from tools.openspec_events import get_event_bus
+            from tools.openspec_state import AgentEvent
+            get_event_bus().emit_sync(AgentEvent.create(
+                project_code=_os_project, change_id=_os_change or "",
+                agent_id=_os_agent_id, event_type="phase_started",
+                payload={"goal_preview": (goal or "")[:120]},
+            ))
+        except Exception:
+            pass
+
     try:
         result = child.run_conversation(user_message=goal)
 
@@ -364,6 +380,20 @@ def _run_single_child(
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
+
+        # Emit OpenSpec completion event
+        if _os_project and _os_agent_id:
+            try:
+                from tools.openspec_events import get_event_bus
+                from tools.openspec_state import AgentEvent
+                evt_type = "agent_completed" if status in ("completed", "interrupted") else "agent_failed"
+                get_event_bus().emit_sync(AgentEvent.create(
+                    project_code=_os_project, change_id=_os_change or "",
+                    agent_id=_os_agent_id, event_type=evt_type,
+                    payload={"status": status, "duration_seconds": duration, "api_calls": api_calls},
+                ))
+            except Exception:
+                pass
 
         return entry
 

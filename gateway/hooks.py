@@ -135,6 +135,14 @@ class HookRegistry:
             except Exception as e:
                 print(f"[hooks] Error loading hook {hook_dir.name}: {e}", flush=True)
 
+    def register(self, event_type: str, handler: Callable) -> None:
+        """Programmatically register a handler for a given event type.
+
+        Complements the file-based discover_and_load() mechanism for
+        handlers that are registered at runtime (e.g. OpenSpec event bus).
+        """
+        self._handlers.setdefault(event_type, []).append(handler)
+
     async def emit(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
         """
         Fire all handlers registered for an event.

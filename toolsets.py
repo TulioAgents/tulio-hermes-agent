@@ -194,6 +194,19 @@ TOOLSETS = {
         "includes": []
     },
 
+    "openspec": {
+        "description": "OpenSpec workflow tracking: register agents, update kanban tasks, emit events, query change status",
+        "tools": [
+            "openspec_register_agent",
+            "openspec_update_task",
+            "openspec_create_task",
+            "openspec_emit_event",
+            "openspec_get_change_status",
+            "openspec_list_active_agents",
+        ],
+        "includes": []
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 

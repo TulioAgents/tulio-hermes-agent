@@ -1264,6 +1264,325 @@ class APIServerAdapter(BasePlatformAdapter):
         return await loop.run_in_executor(None, _run)
 
     # ------------------------------------------------------------------
+    # OpenSpec: WebSocket event streaming
+    # ------------------------------------------------------------------
+
+    async def _handle_ws_events(self, request):
+        """
+        WebSocket endpoint: /ws/events?project=X&change=Y
+
+        Pushes all OpenSpec events in real-time to the connected client.
+        Optional query params filter events by project_code and/or change_id.
+        """
+        if not AIOHTTP_AVAILABLE:
+            return web.Response(status=503, text="aiohttp not available")
+
+        try:
+            from aiohttp import web as _web
+            from tools.openspec_events import get_event_bus
+        except ImportError:
+            return web.Response(status=503, text="OpenSpec not available")
+
+        project_code = request.rel_url.query.get("project")
+        change_id = request.rel_url.query.get("change")
+
+        ws = _web.WebSocketResponse(heartbeat=30)
+        await ws.prepare(request)
+
+        queue: asyncio.Queue = asyncio.Queue(maxsize=500)
+        bus = get_event_bus()
+
+        if project_code:
+            bus.subscribe_project(queue, project_code=project_code, change_id=change_id)
+        else:
+            bus.subscribe(queue)
+
+        try:
+            while not ws.closed:
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=5.0)
+                    if not ws.closed:
+                        await ws.send_json(msg)
+                except asyncio.TimeoutError:
+                    continue  # heartbeat keeps connection alive
+        except Exception as exc:
+            logger.debug("[openspec-ws] connection closed: %s", exc)
+        finally:
+            bus.unsubscribe(queue)
+            await ws.close()
+
+        return ws
+
+    async def _handle_ws_agent_logs(self, request):
+        """
+        WebSocket endpoint: /ws/agent/{agent_id}/logs
+
+        Streams live events for a specific agent.
+        """
+        if not AIOHTTP_AVAILABLE:
+            return web.Response(status=503, text="aiohttp not available")
+
+        try:
+            from aiohttp import web as _web
+            from tools.openspec_events import get_event_bus, _FilteredQueue
+        except ImportError:
+            return web.Response(status=503, text="OpenSpec not available")
+
+        agent_id = request.match_info["agent_id"]
+
+        ws = _web.WebSocketResponse(heartbeat=30)
+        await ws.prepare(request)
+
+        queue: asyncio.Queue = asyncio.Queue(maxsize=500)
+
+        # Custom filter: only events matching this agent_id
+        class _AgentFilter:
+            def put_nowait(self, item):
+                data = item.get("data", {})
+                if data.get("agent_id") == agent_id:
+                    queue.put_nowait(item)
+
+        adapter = _AgentFilter()
+        bus = get_event_bus()
+        bus.subscribe(adapter)
+
+        try:
+            while not ws.closed:
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=5.0)
+                    if not ws.closed:
+                        await ws.send_json(msg)
+                except asyncio.TimeoutError:
+                    continue
+        except Exception as exc:
+            logger.debug("[openspec-ws-agent] connection closed: %s", exc)
+        finally:
+            bus.unsubscribe(adapter)
+            await ws.close()
+
+        return ws
+
+    # ------------------------------------------------------------------
+    # OpenSpec: REST API
+    # ------------------------------------------------------------------
+
+    def _get_openspec_db(self):
+        try:
+            from hermes_state import SessionDB
+            return SessionDB()
+        except Exception as exc:
+            logger.debug("openspec db unavailable: %s", exc)
+            return None
+
+    async def _handle_os_projects(self, request):
+        """GET /v1/openspec/projects -- list projects from project-map.yaml"""
+        import yaml
+        from pathlib import Path
+
+        map_path = Path.home() / "coding-projects" / "project-map.yaml"
+        if not map_path.exists():
+            return web.json_response({"projects": [], "error": "project-map.yaml not found"})
+
+        try:
+            data = yaml.safe_load(map_path.read_text()) or {}
+            return web.json_response({"projects": data.get("projects", [])})
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    async def _handle_os_changes(self, request):
+        """GET /v1/openspec/projects/{code}/changes"""
+        code = request.match_info["code"]
+        db = self._get_openspec_db()
+        if not db:
+            return web.json_response({"error": "db unavailable"}, status=503)
+
+        try:
+            # Get unique change_ids for this project from the tasks table
+            rows = db._conn.execute(
+                "SELECT DISTINCT change_id FROM openspec_tasks WHERE project_code=? ORDER BY change_id",
+                (code,),
+            ).fetchall()
+            changes = [r[0] for r in rows]
+            return web.json_response({"project_code": code, "changes": changes})
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    async def _handle_os_tasks(self, request):
+        """GET /v1/openspec/projects/{code}/changes/{change_id}/tasks"""
+        code = request.match_info["code"]
+        change_id = request.match_info["change_id"]
+        db = self._get_openspec_db()
+        if not db:
+            return web.json_response({"error": "db unavailable"}, status=503)
+
+        try:
+            tasks = db.openspec_list_tasks(project_code=code, change_id=change_id)
+            # Group by status for kanban view
+            grouped: dict = {}
+            for t in tasks:
+                grouped.setdefault(t.status, []).append(t.to_dict())
+            return web.json_response({
+                "project_code": code,
+                "change_id": change_id,
+                "tasks": [t.to_dict() for t in tasks],
+                "by_status": grouped,
+            })
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    async def _handle_os_agents(self, request):
+        """GET /v1/openspec/projects/{code}/changes/{change_id}/agents"""
+        code = request.match_info["code"]
+        change_id = request.match_info["change_id"]
+        db = self._get_openspec_db()
+        if not db:
+            return web.json_response({"error": "db unavailable"}, status=503)
+
+        try:
+            agents = db.openspec_list_agents(project_code=code, change_id=change_id)
+            return web.json_response({
+                "project_code": code,
+                "change_id": change_id,
+                "agents": [a.to_dict() for a in agents],
+                "running": sum(1 for a in agents if a.status == "running"),
+            })
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    async def _handle_os_events(self, request):
+        """GET /v1/openspec/projects/{code}/changes/{change_id}/events"""
+        code = request.match_info["code"]
+        change_id = request.match_info["change_id"]
+        event_type = request.rel_url.query.get("type")
+        limit = min(int(request.rel_url.query.get("limit", 100)), 500)
+        offset = int(request.rel_url.query.get("offset", 0))
+        db = self._get_openspec_db()
+        if not db:
+            return web.json_response({"error": "db unavailable"}, status=503)
+
+        try:
+            events = db.openspec_list_events(
+                project_code=code, change_id=change_id,
+                event_type=event_type, limit=limit, offset=offset,
+            )
+            return web.json_response({
+                "project_code": code,
+                "change_id": change_id,
+                "events": [e.to_dict() for e in events],
+                "count": len(events),
+                "offset": offset,
+            })
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    async def _handle_os_agent_detail(self, request):
+        """GET /v1/openspec/agents/{agent_id}"""
+        agent_id = request.match_info["agent_id"]
+        db = self._get_openspec_db()
+        if not db:
+            return web.json_response({"error": "db unavailable"}, status=503)
+
+        try:
+            agents = db.openspec_list_agents()
+            agent = next((a for a in agents if a.agent_id == agent_id), None)
+            if not agent:
+                return web.json_response({"error": "agent not found"}, status=404)
+            events = db.openspec_list_events(agent_id=agent_id, limit=50)
+            return web.json_response({
+                "agent": agent.to_dict(),
+                "recent_events": [e.to_dict() for e in events],
+            })
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    async def _handle_os_agent_logs(self, request):
+        """GET /v1/openspec/agents/{agent_id}/logs"""
+        agent_id = request.match_info["agent_id"]
+        limit = min(int(request.rel_url.query.get("limit", 200)), 1000)
+        db = self._get_openspec_db()
+        if not db:
+            return web.json_response({"error": "db unavailable"}, status=503)
+
+        try:
+            events = db.openspec_list_events(agent_id=agent_id, limit=limit)
+            return web.json_response({
+                "agent_id": agent_id,
+                "events": [e.to_dict() for e in events],
+                "count": len(events),
+            })
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    async def _handle_os_create_change(self, request):
+        """POST /v1/openspec/projects/{code}/changes -- scaffold a new change directory"""
+        code = request.match_info["code"]
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+
+        change_id = body.get("change_id", "").strip()
+        if not change_id:
+            return web.json_response({"error": "change_id is required"}, status=400)
+
+        try:
+            import yaml
+            from pathlib import Path
+
+            map_path = Path.home() / "coding-projects" / "project-map.yaml"
+            data = yaml.safe_load(map_path.read_text()) if map_path.exists() else {}
+            projects = data.get("projects", [])
+            project = next((p for p in projects if p.get("name") == code), None)
+            if not project:
+                return web.json_response({"error": f"project '{code}' not in project-map.yaml"}, status=404)
+
+            project_path = Path(project["path"].replace("~", str(Path.home())))
+            change_dir = project_path / "openspec" / "changes" / change_id
+            change_dir.mkdir(parents=True, exist_ok=True)
+
+            # Write starter status.yaml
+            status_path = change_dir / "status.yaml"
+            if not status_path.exists():
+                status_path.write_text(
+                    f"change_id: {change_id}\nphase: idea\nowner: ''\nbranch: ''\nblockers: []\n"
+                )
+
+            return web.json_response({
+                "project_code": code,
+                "change_id": change_id,
+                "path": str(change_dir),
+                "created": True,
+            })
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    async def _handle_os_update_task(self, request):
+        """PUT /v1/openspec/tasks/{task_id} -- manual task status override"""
+        task_id = request.match_info["task_id"]
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+
+        status = body.get("status", "").strip()
+        if not status:
+            return web.json_response({"error": "status is required"}, status=400)
+
+        db = self._get_openspec_db()
+        if not db:
+            return web.json_response({"error": "db unavailable"}, status=503)
+
+        try:
+            db.openspec_update_task_status(
+                task_id=task_id,
+                status=status,
+                summary=body.get("summary"),
+            )
+            return web.json_response({"task_id": task_id, "status": status, "updated": True})
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    # ------------------------------------------------------------------
     # BasePlatformAdapter interface
     # ------------------------------------------------------------------
 
@@ -1293,6 +1612,18 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+            # OpenSpec observability: WebSocket + REST
+            self._app.router.add_get("/ws/events", self._handle_ws_events)
+            self._app.router.add_get("/ws/agent/{agent_id}/logs", self._handle_ws_agent_logs)
+            self._app.router.add_get("/v1/openspec/projects", self._handle_os_projects)
+            self._app.router.add_get("/v1/openspec/projects/{code}/changes", self._handle_os_changes)
+            self._app.router.add_get("/v1/openspec/projects/{code}/changes/{change_id}/tasks", self._handle_os_tasks)
+            self._app.router.add_get("/v1/openspec/projects/{code}/changes/{change_id}/agents", self._handle_os_agents)
+            self._app.router.add_get("/v1/openspec/projects/{code}/changes/{change_id}/events", self._handle_os_events)
+            self._app.router.add_get("/v1/openspec/agents/{agent_id}", self._handle_os_agent_detail)
+            self._app.router.add_get("/v1/openspec/agents/{agent_id}/logs", self._handle_os_agent_logs)
+            self._app.router.add_post("/v1/openspec/projects/{code}/changes", self._handle_os_create_change)
+            self._app.router.add_put("/v1/openspec/tasks/{task_id}", self._handle_os_update_task)
 
             # Port conflict detection — fail fast if port is already in use
             import socket as _socket
