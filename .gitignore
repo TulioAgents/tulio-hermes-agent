@@ -79,3 +79,11 @@ graphify-out/
 .codex/
 .opencode/
 CLAUDE.md
+
+
+graphify-out/manifest.json    # mtime-based, breaks after git clone
+graphify-out/cost.json        # local only
+
+
+
+
