@@ -70,3 +70,12 @@ mini-swe-agent/
 result
 website/static/api/skills-index.json
 models-dev-upstream/
+
+# graphify knowledge graph artifacts (regenerable, large)
+graphify-out/
+
+# Local agent configs (per-developer)
+.claude/
+.codex/
+.opencode/
+CLAUDE.md

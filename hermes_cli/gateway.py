@@ -2298,6 +2298,13 @@ def launchd_status(deep: bool = False):
         loaded = False
         loaded_output = ""
 
+    try:
+        from gateway.platforms.api_server import DEFAULT_PORT
+        _gw_port = int(os.environ.get("API_SERVER_PORT", DEFAULT_PORT))
+    except Exception:
+        _gw_port = 8642
+    _gw_host = os.environ.get("API_SERVER_HOST", "127.0.0.1")
+    print(f"Gateway API:   http://{_gw_host}:{_gw_port}")
     print(f"Launchd plist: {plist_path}")
     if launchd_plist_is_current():
         print("✓ Service definition matches the current Hermes install")
