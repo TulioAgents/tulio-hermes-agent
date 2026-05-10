@@ -22,11 +22,13 @@ const SYSTEM_MONO =
   'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace';
 
 const DEFAULT_TYPOGRAPHY: ThemeTypography = {
-  fontSans: SYSTEM_SANS,
-  fontMono: SYSTEM_MONO,
+  fontSans: `"Inter", ${SYSTEM_SANS}`,
+  fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+  fontUrl:
+    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap",
   baseSize: "15px",
-  lineHeight: "1.55",
-  letterSpacing: "0",
+  lineHeight: "1.6",
+  letterSpacing: "-0.01em",
 };
 
 const DEFAULT_LAYOUT: ThemeLayout = {
@@ -40,14 +42,14 @@ const DEFAULT_LAYOUT: ThemeLayout = {
 
 export const defaultTheme: DashboardTheme = {
   name: "default",
-  label: "Hermes Teal",
-  description: "Classic dark teal — the canonical Hermes look",
+  label: "Hermes Ivory",
+  description: "Warm ivory canvas with deep teal text — the light Hermes look",
   palette: {
-    background: { hex: "#041c1c", alpha: 1 },
-    midground: { hex: "#ffe6cb", alpha: 1 },
-    foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: "rgba(255, 189, 56, 0.35)",
-    noiseOpacity: 1,
+    background: { hex: "#f5efe2", alpha: 1 },
+    midground: { hex: "#0e2424", alpha: 1 },
+    foreground: { hex: "#000000", alpha: 0 },
+    warmGlow: "rgba(255, 189, 56, 0.18)",
+    noiseOpacity: 0,
   },
   typography: DEFAULT_TYPOGRAPHY,
   layout: DEFAULT_LAYOUT,

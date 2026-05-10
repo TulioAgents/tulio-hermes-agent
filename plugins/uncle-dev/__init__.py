@@ -7,6 +7,7 @@ _SKILLS_DIR = _PLUGIN_DIR / "skills"
 
 # All skill directory names bundled in this plugin
 _SKILLS = [
+    "uncle-dev-acknowledge",
     "uncle-dev-api-and-interface-design",
     "uncle-dev-browser-testing-with-devtools",
     "uncle-dev-ci-cd-and-automation",
@@ -25,6 +26,7 @@ _SKILLS = [
     "uncle-dev-incremental-implementation",
     "uncle-dev-knowledge-capture",
     "uncle-dev-knowledge-maintenance",
+    "uncle-dev-next-task",
     "uncle-dev-performance-optimization",
     "uncle-dev-planning-and-task-breakdown",
     "uncle-dev-research",
