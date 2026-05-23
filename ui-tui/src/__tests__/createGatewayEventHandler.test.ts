@@ -4,7 +4,7 @@ import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
-import { patchUiState, resetUiState } from '../app/uiStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -117,6 +117,86 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: {}, type: 'message.start' } as any)
 
     expect(getTurnState().todos).toEqual(todos)
+  })
+
+  it('prints compaction progress status into the transcript', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { kind: 'compressing', text: 'compressing 968 messages (~123,400 tok)…' },
+      type: 'status.update'
+    } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith('compressing 968 messages (~123,400 tok)…')
+  })
+
+  it('keeps goal verdict text in transcript but shows a brief idle status (#goal statusbar)', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+    const verdict = '✓ Goal achieved: long judge reason goes only in transcript, not merged with cwd label.'
+
+    vi.useFakeTimers()
+    try {
+      onEvent({
+        payload: { kind: 'goal', text: verdict },
+        type: 'status.update'
+      } as any)
+
+      expect(ctx.system.sys).toHaveBeenCalledWith(verdict)
+      expect(getUiState().status).toBe('✓ goal complete')
+
+      vi.advanceTimersByTime(6001)
+      expect(getUiState().status).toBe('ready')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('maps goal status.update prefixes to short status strings', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { kind: 'goal', text: '↻ Continuing toward goal (1/10): reason' },
+      type: 'status.update'
+    } as any)
+    expect(getUiState().status).toBe('↻ goal continuing')
+
+    onEvent({
+      payload: { kind: 'goal', text: '⏸ Goal paused — budget exhausted.' },
+      type: 'status.update'
+    } as any)
+    expect(getUiState().status).toBe('⏸ goal paused')
+  })
+
+  it('surfaces self-improvement review summaries as a persistent system line', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { text: "💾 Self-improvement review: Skill 'hermes-release' patched" },
+      type: 'review.summary'
+    } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith(
+      "💾 Self-improvement review: Skill 'hermes-release' patched"
+    )
+  })
+
+  it('ignores review.summary events with empty or missing text', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: '' }, type: 'review.summary' } as any)
+    onEvent({ payload: { text: '   ' }, type: 'review.summary' } as any)
+    onEvent({ payload: undefined, type: 'review.summary' } as any)
+
+    expect(ctx.system.sys).not.toHaveBeenCalled()
   })
 
   it('clears the visible todo list when the todo tool returns an empty list', () => {
@@ -262,6 +342,25 @@ describe('createGatewayEventHandler', () => {
     expect(appended[appended.length - 1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
+  it('shows verbose reasoning even when normal reasoning display is off', () => {
+    vi.useFakeTimers()
+    patchUiState({ showReasoning: false })
+    const appended: Msg[] = []
+    const streamed = 'verbose-only reasoning'
+
+    try {
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: { text: streamed, verbose: true }, type: 'reasoning.delta' } as any)
+      vi.runOnlyPendingTimers()
+
+      expect(turnController.reasoningText).toBe(streamed)
+      expect(getTurnState().reasoning).toBe(streamed)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('ignores fallback reasoning.available when streamed reasoning already exists', () => {
     const appended: Msg[] = []
     const streamed = 'short streamed reasoning'
@@ -291,6 +390,19 @@ describe('createGatewayEventHandler', () => {
     expect(appended[0]?.thinking).toBe(fromServer)
     expect(appended[0]?.thinkingTokens).toBe(estimateTokensRough(fromServer))
     expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
+  })
+
+  it('renders browser.progress events as system transcript lines as they stream in', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const handler = createGatewayEventHandler(ctx)
+
+    handler({
+      payload: { message: 'Chromium-family browser launched and listening on port 9222' },
+      type: 'browser.progress'
+    } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith('Chromium-family browser launched and listening on port 9222')
   })
 
   it('annotates gateway.start_timeout with stderr tail lines so users can diagnose without /logs', () => {
@@ -390,6 +502,25 @@ describe('createGatewayEventHandler', () => {
     expect(appended[1]?.tools?.[0]).toContain('Patch')
     expect(appended[3]?.text).toBe('patch applied')
     expect(appended[3]?.text).not.toContain('```diff')
+  })
+
+  it('keeps verbose result text on inline_diff tool completions', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const diff = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+
+    onEvent({
+      payload: { args_text: '{ "path": "foo.ts" }', context: 'foo.ts', name: 'patch', tool_id: 'tool-1' },
+      type: 'tool.start'
+    } as any)
+    onEvent({
+      payload: { inline_diff: diff, result_text: 'patched result', tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
+
+    expect(turnController.segmentMessages[0]).toMatchObject({ kind: 'diff' })
+    expect(turnController.segmentMessages[0]?.tools?.[0]).toContain('Args:\n{ "path": "foo.ts" }')
+    expect(turnController.segmentMessages[0]?.tools?.[0]).toContain('Result:\npatched result')
   })
 
   it('keeps full final responses from duplicating flushed pre-diff narration', () => {
@@ -684,6 +815,61 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().activity).toMatchObject([{ text: 'boom', tone: 'error' }])
   })
 
+  it('accepts timeout/error subagent terminal statuses and ignores stale live events', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { goal: 'timeout child', subagent_id: 'sa-timeout', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { goal: 'timeout child', status: 'timeout', subagent_id: 'sa-timeout', task_index: 0 },
+      type: 'subagent.complete'
+    } as any)
+
+    expect(getTurnState().subagents.find(s => s.id === 'sa-timeout')?.status).toBe('timeout')
+
+    // Late start/spawn updates must not clobber terminal timeout/error states.
+    onEvent({
+      payload: { goal: 'timeout child', subagent_id: 'sa-timeout', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { goal: 'timeout child', subagent_id: 'sa-timeout', task_index: 0 },
+      type: 'subagent.spawn_requested'
+    } as any)
+
+    expect(getTurnState().subagents.find(s => s.id === 'sa-timeout')?.status).toBe('timeout')
+
+    onEvent({
+      payload: { goal: 'error child', subagent_id: 'sa-error', task_index: 1 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { goal: 'error child', status: 'error', subagent_id: 'sa-error', task_index: 1 },
+      type: 'subagent.complete'
+    } as any)
+
+    expect(getTurnState().subagents.find(s => s.id === 'sa-error')?.status).toBe('error')
+  })
+
+  it('normalizes unknown subagent.complete statuses to completed', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { goal: 'weird child', subagent_id: 'sa-weird', task_index: 2 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { goal: 'weird child', status: 'mystery_status', subagent_id: 'sa-weird', task_index: 2 },
+      type: 'subagent.complete'
+    } as any)
+
+    expect(getTurnState().subagents.find(s => s.id === 'sa-weird')?.status).toBe('completed')
+  })
+
   it('drops stale reasoning/tool/todos events after ctrl-c until the next message starts', () => {
     // Repro for the discord report: ctrl-c interrupts, but late reasoning/tool
     // events from the still-winding-down agent loop kept populating the UI for
@@ -714,9 +900,7 @@ describe('createGatewayEventHandler', () => {
       } as any)
 
       // Pre-interrupt todos should land in turn state.
-      expect(getTurnState().todos).toEqual([
-        { content: 'pre-interrupt', id: 'todo-1', status: 'pending' }
-      ])
+      expect(getTurnState().todos).toEqual([{ content: 'pre-interrupt', id: 'todo-1', status: 'pending' }])
 
       turnController.interruptTurn({
         appendMessage: (msg: Msg) => appended.push(msg),

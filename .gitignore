@@ -18,6 +18,7 @@ __pycache__/web_tools.cpython-310.pyc
 logs/
 data/
 .pytest_cache/
+.pytest-cache/
 tmp/
 temp_vision_images/
 hermes-*/*
@@ -84,6 +85,6 @@ CLAUDE.md
 graphify-out/manifest.json    # mtime-based, breaks after git clone
 graphify-out/cost.json        # local only
 
-
-
-
+hermes_cli/tui_dist/*
+hermes_cli/scripts/
+docs/superpowers/*
