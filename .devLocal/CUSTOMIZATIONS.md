@@ -2,7 +2,7 @@
 
 This document catalogs all customizations made to the Hermes agent for the tulio-hermes-agent project. These customizations include local development tools, UI enhancements, uncle-dev workflow automation, and developer-focused features.
 
-**Last Updated:** 2026-05-08 (rebased onto main)  
+**Last Updated:** 2026-06-06 (merged upstream/main v0.16.0)  
 **Branch:** uncle-dev  
 **Backup:** uncle-dev-backup-2026-05-08
 
@@ -143,11 +143,11 @@ The tulio customizations represent a developer-friendly fork of Hermes with enha
 ## 6. Uncle-Dev Workflow System
 
 ### 6.1 Uncle-Dev Skills Framework
-**Location:** `/plugins/uncle/`  
+**Location:** `/plugins/uncle-dev/`  
 **Purpose:** Integrated workflow automation for structured development
 
 #### 6.1.1 uncle-dev-next-task
-**Location:** `/plugins/uncle/skills/uncle-dev-next-task/`  
+**Location:** `/plugins/uncle-dev/skills/uncle-dev-next-task/`  
 **Purpose:** Determine the next actionable task from OpenSpec changes and scratchpads
 
 **Components:**
@@ -166,7 +166,7 @@ The tulio customizations represent a developer-friendly fork of Hermes with enha
 - Lock file management
 
 #### 6.1.2 uncle-dev-acknowledge
-**Location:** `/plugins/uncle/skills/uncle-dev-acknowledge/`  
+**Location:** `/plugins/uncle-dev/skills/uncle-dev-acknowledge/`  
 **Purpose:** Gate management for pending acknowledgements
 
 **Components:**
@@ -182,7 +182,7 @@ The tulio customizations represent a developer-friendly fork of Hermes with enha
 - Integration with development gates
 
 #### 6.1.3 uncle-dev-knowledge-capture
-**Location:** `/plugins/uncle/skills/uncle-dev-knowledge-capture/`  
+**Location:** `/plugins/uncle-dev/skills/uncle-dev-knowledge-capture/`  
 **Purpose:** Document recently solved problems while context is fresh
 
 **Features:**
@@ -192,7 +192,7 @@ The tulio customizations represent a developer-friendly fork of Hermes with enha
 - Knowledge reuse support
 
 #### 6.1.4 uncle-dev-spec
-**Location:** `/plugins/uncle/skills/uncle-dev-spec-driven-development/`  
+**Location:** `/plugins/uncle-dev/skills/uncle-dev-spec-driven-development/`  
 **Purpose:** Spec-driven development workflow
 
 **Features:**
@@ -285,7 +285,7 @@ tulio-hermes-agent/
 │   └── themes/presets.ts                      # Theme presets
 ├── website/docs/developer-guide/
 │   └── creating-a-plugin.md                   # Plugin guide
-├── plugins/uncle/
+├── plugins/uncle-dev/
 │   ├── __init__.py
 │   └── skills/
 │       ├── uncle-dev-next-task/               # Task selection
